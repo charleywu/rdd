@@ -1,0 +1,2 @@
+# rdd
+Regression discontinuity design
