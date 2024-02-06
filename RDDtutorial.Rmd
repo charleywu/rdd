@@ -1,0 +1,255 @@
+---
+title: "Regression Discontinuity Design"
+date: "`r Sys.Date()`"
+author: Charley Wu 
+output:
+  rmdformats::downcute:
+    fig_width: 10
+    fig_height: 6
+    toc_depth: 3
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+    highlight: tango
+    downcute_theme: default
+    code_folding: hide
+bibliography: bibliography.bib
+csl: codeSnippets/apa.cls
+---
+  
+  
+```{r setup, results = FALSE, message=FALSE}
+packages <- c('tidyverse', 'cowplot', 'rddtools', 'sjPlot')
+#invisible(lapply(packages, install.packages, character.only = TRUE)) #Install packages if any are missing
+invisible(lapply(packages, require, character.only = TRUE)) #Load all packages
+options(dplyr.summarise.inform = FALSE) #suppress annoying messages
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+set.seed(1234) #set seed for reproducibility
+```
+
+This R Notebook is a companion for a lecture on Regression Discontinuity Design (RDD). 
+
+
+# Dataset
+
+Let's start with a dataset from @carpenter2009effect. The data shows different causes of mortality at different age groups (19-22 years) that was collected by the National Health Interview Survey (NHIS) for the period of 1997–2004. 
+```{r}
+carpenter <- readRDS("data/carpenter_dobkin_2009.rds") #Carpenter & Dobkin (2009); doi:10.1257/app.1.1.164 
+knitr::kable(summary(carpenter)) #Overview of data
+```
+
+## Drug, Alcohol, homicide, and Car-related Dealths
+Let's get a better understanding of the data by visualizing some of the most common causes of death. We will do so by plotting the data as a function of age to see if any patterns emerge.
+
+```{r}
+deaths <- carpenter %>% group_by(agecell) %>% pivot_longer(cols = c('drugs', 'alcohol', 'homicide', 'mva'))  #Extract causes
+deaths$name <- factor(deaths$name, labels = c('Alcohol', 'Drugs', 'Homicide', 'Motor Vehicle Accidents') )
+
+ggplot(deaths,aes(x = agecell, y = value, color = name)) + 
+    geom_point() +
+    facet_wrap(~name, scales='free_y', )+
+    theme_classic()+
+    scale_color_manual(values =c("#E69F00","#56B4E9","#009E73", "#CC79A7"), name='')+
+    labs(y = "Deaths per 100,000",
+         x = "Age")+
+    theme(legend.position='none', strip.background = element_blank())
+
+```
+
+# Regression Discontinuity Design (RDD)
+
+Let's focus on the motor vehicle accidents as a way to learn how to use RDD. The main requirement for RDD is that the separation between treatments and controls is implemented at some threshold along an *assignment variable*. Here, we can use age as the assignment variable, since across the US, the minimum legal age for alcohol is 21. This means that the *control group* consists of individuals under this limit and the *treatment group* are those above. The goal is then to see if we can identify a robust discontinuity in the data at this threshold. The reason we use motor vehicle accidents, is that the irresponsible use of alcohol with driving seems like an obvious place to find an effect of the drinking age.
+
+Let's first visualize the data once more and plot the threshold.
+
+```{r}
+ggplot(carpenter, aes(x = agecell, y = mva)) + 
+  geom_point() +
+  theme_classic()+
+  geom_vline(xintercept = 21, color = "red", size = 1, linetype = "dashed") + 
+  labs(y = "Deaths in Moving Vehicle Accidents",
+       x = "Age")
+```
+
+## Standard regression
+
+Let's first try to model this with a standard linear regression, where we assume there is no discontinuity. 
+
+```{r}
+
+#Run a linear regression
+lm_same_slope <- lm(mva~agecell, carpenter)  
+
+#Examine model
+tab_model(lm_same_slope, pred.labels=c('Intercept', 'age')) #plot results as a table
+plot_model(lm_same_slope, axis.labels =c('age')) + theme_classic() #visualize coefficients
+
+#Plot the regression
+ggplot(carpenter,aes(x = agecell, y = mva)) +
+  geom_point(aes(color = factor(agecell>=21))) +
+  theme_classic()+
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(values=c("#CC79A7", "#0072B2"))+
+  guides(color = FALSE) +
+  geom_vline(xintercept = 21, color = "red",linetype = "dashed") +
+  labs(y = "Deaths in Moving Vehicle Accidents",
+       x = "Age")
+```
+
+The results are not bad, but let's see if we can do better.
+
+## Different Slope
+
+Now let's try a model with different slopes on either side of the cutoff. We will be using the `rddtools` package for performing these analyses.
+```{r}
+#Prepare data 
+carpenter_rdd <- rdd_data(carpenter$mva, carpenter$agecell, cutpoint = 21)
+#Regression model with different slope
+lm_different_slope <-  rdd_reg_lm(carpenter_rdd, slope = "separate")  
+
+#Model summary
+tab_model(lm_different_slope, pred.labels = c('Intercept', 'Discontinuity', 'Slope <21','Slope >=21'))
+#Plot coefficients
+plot_model(lm_different_slope, axis.labels =c('Slope >=21', 'Slope <21', 'Discontinuity')) + theme_classic() #note that the axis labels are reversed for this plot
+
+#Visualization of slopes
+ggplot(carpenter,aes(x = agecell, y = mva, color = factor(agecell>=21))) +
+  geom_point() +
+  theme_classic()+
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(values=c("#CC79A7", "#0072B2"))+
+  guides(color = FALSE) +
+  geom_vline(xintercept = 21, color = "red", linetype = "dashed") +
+  labs(y = "Deaths in Moving Vehicle Accidents",
+       x = "Age")
+```
+Here, we can see a clear discontinuity, with an increase of 4.53 deaths (per 100,000) at the threshold. And while the slope after the threshold looks a bit more step, the effect is not significant.
+
+## Changing the form of the function
+
+So far, we have only used a linear regression. However, the data may not be linear and we may need to try other forms of functions. Here, let's try a polynomial function with an order of 2.
+
+```{r}
+#Regression model with different slope and quadratic slopes
+lm_different_slope_quadratic <- rdd_reg_lm(carpenter_rdd, slope = "separate", order = 2)  
+
+#Model summary
+tab_model(lm_different_slope_quadratic, pred.labels = c('Intercept', 'Discontinuity', 'Slope <21','Slope^2 <21', 'Slope >=21', 'Slope^2 >=21'))
+#Plot coefficients
+plot_model(lm_different_slope_quadratic, axis.label=c('Slope^2 >=21', 'Slope >=21','Slope^2 <21', 'Slope <21', 'Discontinuity')) + theme_classic()
+
+
+#Visualization of slopes
+ggplot(carpenter,aes(x = agecell, y = mva, color = factor(agecell>=21))) +
+  geom_point() +
+  theme_classic()+
+   geom_smooth(method = "lm", formula = y ~ x + I(x ^ 2), se = FALSE) +
+  scale_color_manual(values=c("#CC79A7", "#0072B2"))+
+  guides(color = FALSE) +
+  geom_vline(xintercept = 21, color = "red", linetype = "dashed") +
+  labs(y = "Deaths in Moving Vehicle Accidents",
+       x = "Age")
+```
+
+Here, we still see a discontinuity with a similar magnitude, but none of the slopes are significant and it still mostly looks like a linear function. We could keep going, with increasingly more complex models, but the data doesn't seem to suggest we need more complexity here.
+
+# Model Comparison
+
+Having run three models, let's now do a model comparison to see which one is best. We can use AIC (Akaike Information Criterion), which is an approximation of leave-one-out cross validation error, with an exact equivalence for linear regression and mixed-effects regression models in the limit of infinite data [@stone1977asymptotic]. The basic idea is that AIC adds a penalty for the number of parameters in the model (i.e., predictors), in order to avoid overfitting by giving an advantage to overly complex models.
+
+Let's compute the AIC of the three models and see which one is best, where lower AIC values are better.
+
+```{r}
+
+AICs <- c(extractAIC(lm_same_slope)[2], extractAIC(lm_different_slope)[2], extractAIC(lm_different_slope_quadratic)[2]) #the 2nd value returned is the AIC
+fits <- data.frame(model = c('Same Slope', 'Different Slope', 'Different Slope + Quadratic'), AIC=AICs) #Create dataframe
+fits$model <- factor(fits$model, levels =  c('Same Slope', 'Different Slope', 'Different Slope + Quadratic'))
+
+
+
+ggplot(fits, aes(x = model, y = AIC, fill = model))+
+  geom_bar(stat = 'identity', color = 'black')+
+  theme_classic()+
+  xlab('model')+
+  scale_fill_brewer(palette = 'Dark2')+
+  guides(fill = FALSE)+
+  ylab('AIC (lower is better)')
+
+```
+
+Unsurprisingly, we find that the best model is one with two linear slopes.
+
+# Sensitivity analysis
+
+Having done a model comparison, there are still additional sensitivity analyses we can perform to add some robustness to our analyses.
+
+## Would other counter-factual cutpoints yield the same effect?
+
+Here, we can test whether other counter-factual cutpoints would yield the same effects. We know that the drinking age is 21, but here we want to test the sensitivity of this analysis, and whether other false positives might pop up. 
+
+```{r}
+
+placeboDF <- plotPlacebo(lm_different_slope,plot=FALSE) #Placebo analysis, testing counterfactual cutpoints
+
+ggplot(subset(placeboDF, cutpoint !=21), aes(x = cutpoint, y = LATE, color = position, fill = position))+
+  geom_hline(yintercept = 0, linetype = 'dashed', color = 'black')+
+  geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.2, color = NA)+
+  geom_line()+
+  geom_point(data = subset(placeboDF, cutpoint ==21),  aes(x = cutpoint, y = LATE))+
+  geom_errorbar(data = subset(placeboDF, cutpoint ==21),  aes(ymin = CI_low, ymax = CI_high, x = cutpoint, y = LATE), width = 0.2)+
+  scale_color_manual(values=c("#CC79A7", "#0072B2", 'black'))+
+  scale_fill_manual(values=c("#CC79A7", "#0072B2", 'black'))+
+  theme_classic()+
+  ylab('Local Average Treatment Effect (LATE)')+
+  xlab('Cut Point')+
+  theme(legend.position='none')
+```
+Here we ca see that most of the other cutpoints have confidence intervals that overlap with 0, whereas the actual cutpoint at 21 years of age, stands out substantially. There is a small region just before 22 years of age where the confidence interval is above 0, but the effect size is much smaller.
+
+## Would restricting the dataset still yield the same effect?
+
+Another form of sensitivity analysis we can do is to restrict the dataset to see if we still arrive at the same effect. Here, we can try restricting the data between 20 and 22 years of age. 
+
+```{r}
+carpenter_restricted <- carpenter %>% filter(agecell>=20 & agecell<=22)
+carpenter_rdd_restricted <-  rdd_data(y = carpenter_restricted$mva, x = carpenter_restricted$agecell, cutpoint = 21)
+#Regression model with different slope
+lm_different_slope_restricted <-  rdd_reg_lm(carpenter_rdd_restricted, slope = "separate")  
+
+#Model summary
+tab_model(lm_different_slope_restricted, pred.labels = c('Intercept', 'Discontinuity', 'Slope <21','Slope >=21'))
+#Plot coefficients
+plot_model(lm_different_slope_restricted, , axis.labels =c('Slope >=21', 'Slope <21', 'Discontinuity')) + theme_classic()
+
+#Visualization of slopes
+ggplot(carpenter_restricted,aes(x = agecell, y = mva, color = factor(agecell>=21))) +
+  geom_point() +
+  theme_classic()+
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_manual(values=c("#CC79A7", "#0072B2"))+
+  guides(color = FALSE) +
+  geom_vline(xintercept = 21, color = "red", linetype = "dashed") +
+  labs(y = "Deaths in Moving Vehicle Accidents",
+       x = "Age")
+
+```
+
+As can be seen from the plot, we find very similar results.
+
+# limitations
+
+Here, we only focused on Sharp RDD, whereas Fuzzy RDD considers cases where assignment to the treatment variable is probabilistic, for instance the awarding of scholarships above some minimum threshold. Thus, the assumptions of a sharp threshold does not apply to all datasets.
+
+Additionally, we have only focused on simple, parametric approaches to regression. However, common RDD methods commonly use non-parametric models to be more agnostic about the form of the function being modeled. Here, we have simply provided the simplest example as an introduction to RDD.
+
+
+# Further reading and limitations
+
+The original method was developed by @thistlethwaite1960regression, while two more recent and canonical papers for further reading are @lee2010regression and @imbens2008regression. The data was provided by @carpenter2009effect, and a [tutorial by Philipp Leppert](https://rpubs.com/phle/r_tutorial_regression_discontinuity_design) provided helpful code snippets that were used in this notebook.
+
+
+
+# References
+
+
